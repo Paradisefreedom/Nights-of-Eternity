@@ -1,0 +1,70 @@
+local repo = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/"
+local Library = loadstring(game:HttpGet(repo .. "Library.lua"))()
+local ThemeManager = loadstring(game:HttpGet(repo .. "addons/ThemeManager.lua"))()
+local SaveManager = loadstring(game:HttpGet(repo .. "addons/SaveManager.lua"))()
+
+local Options = Library.Options
+local Toggles = Library.Toggles
+
+Library.ForceCheckbox = false -- Forces AddToggle to AddCheckbox
+Library.ShowToggleFrameInKeybinds = true -- Make toggle keybinds work inside the keybinds UI (aka adds a toggle to the UI). Good for mobile users (Default value = true)
+
+local Window = Library:CreateWindow({
+	-- Set Center to true if you want the menu to appear in the center
+	-- Set AutoShow to true if you want the menu to appear when it is created
+	-- Set Resizable to true if you want to have in-game resizable Window
+	-- Set MobileButtonsSide to "Left" or "Right" if you want the ui toggle & lock buttons to be on the left or right side of the window
+	-- Set ShowCustomCursor to false if you don't want to use the Linoria cursor
+	-- Set AlwaysOnTop to true if you want the menu to render above Roblox core blur (executor only)
+	-- NotifySide = Changes the side of the notifications (Left, Right) (Default value = Left)
+	-- Position and Size are also valid options here
+	-- but you do not need to define them unless you are changing them :)
+
+	Title = "ShinyLeak",
+	Footer = "version: 0",
+	Icon = 95816097006870,
+	NotifySide = "Right",
+	ShowCustomCursor = true,
+})
+
+-- CALLBACK NOTE:
+-- Passing in callback functions via the initial element parameters (i.e. Callback = function(Value)...) works
+-- HOWEVER, using Toggles/Options.INDEX:OnChanged(function(Value) ... ) is the RECOMMENDED way to do this.
+-- I strongly recommend decoupling UI code from logic code. i.e. Create your UI elements FIRST, and THEN setup :OnChanged functions later.
+
+-- You do not have to set your tabs & groups up this way, just a prefrence.
+-- You can find more icons in https://lucide.dev/
+local Tabs = {
+	-- Creates a new tab titled Main
+	Main = Window:AddTab("AutoFarm", "user"),
+	["UI Settings"] = Window:AddTab("Auto Buy Survivors", "Auto buy Killers"),
+}
+
+
+--[[
+Example of how to add a warning box to a tab; the title AND text support rich text formatting.
+
+local UISettingsTab = Tabs["UI Settings"]
+
+UISettingsTab:UpdateWarningBox({
+	Visible = true,
+	Title = "Warning",
+	Text = "This is a warning box!",
+})
+
+local LeftGroupBox = Tabs.Main:AddGroupbox({
+	Side = "Left", --// (Case-insensitive),
+	Name = "Auto",
+	Description = "boxes",
+	IconName = "boxes",
+	-- Collapsed = false,
+	-- DisableCollapsing = false,
+})
+
+local TabBox = Tabs.Main:AddLeftTabbox() -- Add Tabbox on left side
+
+local Tab1 = TabBox:AddTab("Emote")
+local Tab2 = TabBox:AddTab("Trait")
+
+
+
