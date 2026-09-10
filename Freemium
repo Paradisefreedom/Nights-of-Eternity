@@ -1,14 +1,8 @@
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
-local TweenService = game:GetService("TweenService")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local VirtualInputManager = game:GetService("VirtualInputManager")
-
+local VirtualUser = game:GetService("VirtualUser")
 local LocalPlayer = Players.LocalPlayer
 
--- ==========================================
---            OBSIDIAN UI SETUP
--- ==========================================
 local repo = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/"
 local Library = loadstring(game:HttpGet(repo .. "Library.lua"))()
 local ThemeManager = loadstring(game:HttpGet(repo .. "addons/ThemeManager.lua"))()
@@ -21,35 +15,60 @@ Library.ForceCheckbox = false
 Library.ShowToggleFrameInKeybinds = true 
 
 local Window = Library:CreateWindow({
-	Title = "ShinyLeak | Nights of Eternity Advanced",
-	Footer = "version: 2.0 (Premium Logic)",
+	Title = "ShinyLeak",
+	Footer = "version: 3.0",
 	Icon = 95816097006870,
 	NotifySide = "Right",
 	ShowCustomCursor = true,
 })
 
+-- ==========================================
+--               TAB SETUP
+-- ==========================================
 local Tabs = {
-	Main = Window:AddTab("AutoFarm", "swords"),
-	Buy = Window:AddTab("Auto Shop", "shopping-cart"),
-	Movement = Window:AddTab("Movement", "navigation"),
-	UISettings = Window:AddTab("UI Settings", "settings")
+	Main = Window:AddTab("Main", "user"),
+	Buy = Window:AddTab("Shop", "shopping-cart"),
+	["UI Settings"] = Window:AddTab("UI Settings", "settings"),
 }
 
--- ==========================================
---            CORE VARIABLES & UTILS
--- ==========================================
-local bvName = "ShinyLeak_MovementBV"
-local currentFarmTarget = nil
-local isFarming = false
+local FarmGroup = Tabs.Main:AddGroupbox({ Side = "Left", Name = "AutoFarm", Description = "Complete minigames" })
+FarmGroup:AddToggle("AutoFarmToggle", { Text = "Enable AutoFarm", Default = false })
+FarmGroup:AddToggle("AutoMinigame", { Text = "Auto-Complete UI Minigames", Default = false, Tooltip = "Auto completes Fish and Puppet minigames" })
+FarmGroup:AddSlider("FarmSpeed", { Text = "Farm Speed", Default = 35, Min = 10, Max = 150, Rounding = 0 })
 
--- Utility to get or create BodyVelocity for smooth hovering/dragging
+local MoveTabBox = Tabs.Main:AddLeftTabbox() 
+local GlideTab = MoveTabBox:AddTab("Glide")
+local HoverTab = MoveTabBox:AddTab("Hover")
+
+GlideTab:AddToggle("GlideToggle", { Text = "Enable Glide", Default = false })
+GlideTab:AddToggle("GlideUnderground", { Text = "Underground", Default = false })
+GlideTab:AddSlider("GlideSpeed", { Text = "Speed", Default = 50, Min = 16, Max = 200, Rounding = 0 })
+
+HoverTab:AddToggle("HoverToggle", { Text = "Enable Hover", Default = false })
+HoverTab:AddToggle("HoverUnderground", { Text = "Underground", Default = false })
+HoverTab:AddSlider("HoverSpeed", { Text = "Speed", Default = 50, Min = 16, Max = 200, Rounding = 0 })
+
+local BuySurvivorsGroup = Tabs.Buy:AddGroupbox({ Side = "Left", Name = "Buy Survivors" })
+BuySurvivorsGroup:AddToggle("AutoBuySurvivors", { Text = "Auto Buy Survivors", Default = false })
+BuySurvivorsGroup:AddInput("SurvivorName", { Default = "Basic Survivor", Text = "Target Name" })
+
+local BuyKillersGroup = Tabs.Buy:AddGroupbox({ Side = "Right", Name = "Buy Killers" })
+BuyKillersGroup:AddToggle("AutoBuyKillers", { Text = "Auto Buy Killers", Default = false })
+BuyKillersGroup:AddInput("KillerName", { Default = "Basic Killer", Text = "Target Name" })
+
+-- ==========================================
+--               LOGIC LOOP
+-- ==========================================
+local bvName = "ShinyLeakMovement"
+
+-- Keeps gravity disabled so CFrame movement is perfectly smooth
 local function getOrMakeBV(hrp)
     local bv = hrp:FindFirstChild(bvName)
     if not bv then
         bv = Instance.new("BodyVelocity")
         bv.Name = bvName
         bv.MaxForce = Vector3.new(math.huge, math.huge, math.huge) 
-        bv.Velocity = Vector3.zero
+        bv.Velocity = Vector3.zero -- Zero velocity ensures gravity doesn't fight the CFrame
         bv.Parent = hrp
     end
     return bv
@@ -60,305 +79,28 @@ local function removeBV(hrp)
     if bv then bv:Destroy() end
 end
 
--- Safely parse numbers from text (handles strings like "1,500" or "2.5k")
-local function parseTokens(tokenString)
-    if type(tokenString) == "number" then return tokenString end
-    local cleanStr = string.gsub(tostring(tokenString), ",", "")
-    if string.find(cleanStr:lower(), "k") then
-        cleanStr = string.gsub(cleanStr:lower(), "k", "")
-        return tonumber(cleanStr) * 1000
-    end
-    return tonumber(cleanStr) or 0
-end
-
--- Fetch player's current tokens dynamically
-local function getCurrentTokens()
-    -- 1st Check: Leaderstats (Standard Roblox Architecture)
-    local leaderstats = LocalPlayer:FindFirstChild("leaderstats")
-    if leaderstats then
-        local tokensObj = leaderstats:FindFirstChild("Tokens") or leaderstats:FindFirstChild("Coins") or leaderstats:FindFirstChild("Points")
-        if tokensObj then
-            return tokensObj.Value
-        end
-    end
-    
-    -- 2nd Check: PlayerGui (If the game hides it from leaderstats)
-    local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
-    if playerGui then
-        -- NOTE: You will need to update "MainUI.CurrencyFrame.Amount" to match the exact path in Nights of Eternity using Dex Explorer
-        local tokenLabel = playerGui:FindFirstChild("MainUI") and playerGui.MainUI:FindFirstChild("CurrencyFrame") and playerGui.MainUI.CurrencyFrame:FindFirstChild("Amount")
-        if tokenLabel and tokenLabel:IsA("TextLabel") then
-            return parseTokens(tokenLabel.Text)
-        end
-    end
-    
-    return 0
-end
-
--- ==========================================
---               AUTOFARM LOGIC
--- ==========================================
-local FarmGroup = Tabs.Main:AddGroupbox({ Side = "Left", Name = "Minigame Automation", Description = "Completes minigames automatically" })
-
-FarmGroup:AddToggle("AutoFarmToggle", {
-	Text = "Enable AutoFarm",
-	Tooltip = "Drags/Hovers you to objectives to complete the minigame",
-	Default = false, 
-	Callback = function(Value)
-		isFarming = Value
-        if not Value and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
-            removeBV(LocalPlayer.Character.HumanoidRootPart)
-        end
-	end,
-})
-
-FarmGroup:AddInput("ObjectiveName", {
-    Default = "Generator",
-    Numeric = false,
-    Finished = true,
-    Text = "Objective Name",
-    Tooltip = "The exact name of the part/model to farm (e.g., Generator, EscapeDoor, Coin)",
-    Placeholder = "Enter target name...",
-})
-
-FarmGroup:AddDropdown("FarmMethod", {
-    Values = { "Smooth Hover", "Direct Drag (Tween)", "Teleport" },
-    Default = 1,
-    Multi = false,
-    Text = "Movement Method",
-})
-
-FarmGroup:AddSlider("FarmSpeed", {
-	Text = "Farming Drag Speed",
-	Default = 35,
-	Min = 10,
-	Max = 150,
-	Rounding = 0,
-})
-
--- Logic to find the nearest objective in the workspace
-local function getNearestObjective()
-    local char = LocalPlayer.Character
-    local hrp = char and char:FindFirstChild("HumanoidRootPart")
-    if not hrp then return nil end
-
-    local targetName = Options.ObjectiveName.Value
-    local closestDistance = math.huge
-    local closestObj = nil
-
-    -- Assuming objectives are stored in Workspace. Look for them dynamically.
+-- Find any objective starting with "HitboxFollowModel"
+local function getHitboxObjective()
     for _, obj in pairs(workspace:GetDescendants()) do
-        if obj.Name == targetName and obj:IsA("BasePart") then
-            local dist = (hrp.Position - obj.Position).Magnitude
-            if dist < closestDistance then
-                closestDistance = dist
-                closestObj = obj
-            end
-        elseif obj.Name == targetName and obj:IsA("Model") and obj.PrimaryPart then
-            local dist = (hrp.Position - obj.PrimaryPart.Position).Magnitude
-            if dist < closestDistance then
-                closestDistance = dist
-                closestObj = obj.PrimaryPart
-            end
+        if obj.Name:sub(1, 17) == "HitboxFollowModel" then
+            if obj:IsA("BasePart") then return obj end
+            if obj:IsA("Model") and obj.PrimaryPart then return obj.PrimaryPart end
+            local part = obj:FindFirstChildWhichIsA("BasePart")
+            if part then return part end
         end
     end
-    return closestObj
+    return nil
 end
 
--- AutoFarm Loop Execution
-RunService.Heartbeat:Connect(function(dt)
-    if not isFarming then return end
-    
-    local char = LocalPlayer.Character
-    local hrp = char and char:FindFirstChild("HumanoidRootPart")
-    local hum = char and char:FindFirstChild("Humanoid")
-    if not (hrp and hum) then return end
-
-    -- Disable collisions to prevent getting stuck while autofarming
-    for _, part in pairs(char:GetDescendants()) do
-        if part:IsA("BasePart") and part.CanCollide then
-            part.CanCollide = false
-        end
-    end
-
-    currentFarmTarget = getNearestObjective()
-    
-    if currentFarmTarget then
-        local targetPos = currentFarmTarget.Position
-        local method = Options.FarmMethod.Value
-        
-        if method == "Smooth Hover" then
-            local bv = getOrMakeBV(hrp)
-            local direction = (targetPos - hrp.Position).Unit
-            -- Hover exactly 5 studs above the target's Y level to avoid ground friction
-            local optimizedTarget = Vector3.new(targetPos.X, targetPos.Y + 5, targetPos.Z)
-            local optimizedDirection = (optimizedTarget - hrp.Position).Unit
-            
-            if (hrp.Position - optimizedTarget).Magnitude > 5 then
-                bv.Velocity = optimizedDirection * Options.FarmSpeed.Value
-                hum:ChangeState(Enum.HumanoidStateType.Physics)
-            else
-                bv.Velocity = Vector3.zero
-                -- Auto-interact with ProximityPrompts if nearby
-                local prompt = currentFarmTarget.Parent:FindFirstChildWhichIsA("ProximityPrompt", true)
-                if prompt then
-                    fireproximityprompt(prompt, 1, true)
-                end
-            end
-            
-        elseif method == "Direct Drag (Tween)" then
-            local dist = (hrp.Position - targetPos).Magnitude
-            local timeToReach = dist / Options.FarmSpeed.Value
-            
-            local tweenInfo = TweenInfo.new(timeToReach, Enum.EasingStyle.Linear)
-            local tween = TweenService:Create(hrp, tweenInfo, {CFrame = currentFarmTarget.CFrame + Vector3.new(0, 3, 0)})
-            tween:Play()
-            
-            local prompt = currentFarmTarget.Parent:FindFirstChildWhichIsA("ProximityPrompt", true)
-            if prompt and dist < 10 then
-                fireproximityprompt(prompt, 1, true)
-            end
-            
-        elseif method == "Teleport" then
-            hrp.CFrame = currentFarmTarget.CFrame * CFrame.new(0, 3, 0)
-            local prompt = currentFarmTarget.Parent:FindFirstChildWhichIsA("ProximityPrompt", true)
-            if prompt then
-                fireproximityprompt(prompt, 1, true)
-            end
-        end
-    end
-end)
-
--- ==========================================
---               AUTO SHOP / BUY LOGIC
--- ==========================================
-local BuySurvivorsGroup = Tabs.Buy:AddGroupbox({ Side = "Left", Name = "Survivors Auto-Buy" })
-local BuyKillersGroup = Tabs.Buy:AddGroupbox({ Side = "Right", Name = "Killers Auto-Buy" })
-
--- Target names/remotes for the user to configure
-BuySurvivorsGroup:AddInput("SurvivorName", { Default = "Basic Survivor", Text = "Target Survivor Name" })
-BuySurvivorsGroup:AddInput("SurvivorCost", { Default = "500", Text = "Survivor Cost" })
-BuySurvivorsGroup:AddToggle("AutoBuySurvivors", { Text = "Enable Auto Buy Survivor", Default = false })
-
-BuyKillersGroup:AddInput("KillerName", { Default = "Basic Killer", Text = "Target Killer Name" })
-BuyKillersGroup:AddInput("KillerCost", { Default = "1000", Text = "Killer Cost" })
-BuyKillersGroup:AddToggle("AutoBuyKillers", { Text = "Enable Auto Buy Killer", Default = false })
-
--- Function to handle opening the shop UI
-local function openShopGUI()
-    local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
-    if playerGui then
-        -- NOTE: Change "ShopGui" to the exact name of the ScreenGui in Nights of Eternity
-        local shop = playerGui:FindFirstChild("ShopGui") or playerGui:FindFirstChild("MainUI")
-        if shop and shop:FindFirstChild("ShopFrame", true) then
-            local frame = shop:FindFirstChild("ShopFrame", true)
-            if not frame.Visible then
-                frame.Visible = true
-            end
-        end
-    end
-end
-
--- Continuous Auto-Buy Loop
-task.spawn(function()
-    while task.wait(2) do -- Check every 2 seconds to avoid rate limits
-        local tokens = getCurrentTokens()
-        
-        -- Process Survivor Auto-Buy
-        if Toggles.AutoBuySurvivors and Toggles.AutoBuySurvivors.Value then
-            local reqTokens = tonumber(Options.SurvivorCost.Value) or math.huge
-            if tokens >= reqTokens then
-                openShopGUI()
-                task.wait(0.5) -- Give UI time to register
-                
-                -- NOTE: You must update this RemoteEvent path using Dex. 
-                -- Example standard path: ReplicatedStorage.Remotes.BuyItem:FireServer("Survivor", "Name")
-                local remote = ReplicatedStorage:FindFirstChild("BuyItem", true) or ReplicatedStorage:FindFirstChild("Purchase", true)
-                if remote and remote:IsA("RemoteEvent") then
-                    remote:FireServer("Survivor", Options.SurvivorName.Value)
-                    Library:Notify("Purchased Survivor: " .. Options.SurvivorName.Value, 3)
-                elseif remote and remote:IsA("RemoteFunction") then
-                    remote:InvokeServer("Survivor", Options.SurvivorName.Value)
-                    Library:Notify("Purchased Survivor: " .. Options.SurvivorName.Value, 3)
-                end
-            end
-        end
-        
-        -- Process Killer Auto-Buy
-        if Toggles.AutoBuyKillers and Toggles.AutoBuyKillers.Value then
-            local reqTokens = tonumber(Options.KillerCost.Value) or math.huge
-            if tokens >= reqTokens then
-                openShopGUI()
-                task.wait(0.5)
-                
-                local remote = ReplicatedStorage:FindFirstChild("BuyItem", true) or ReplicatedStorage:FindFirstChild("Purchase", true)
-                if remote and remote:IsA("RemoteEvent") then
-                    remote:FireServer("Killer", Options.KillerName.Value)
-                    Library:Notify("Purchased Killer: " .. Options.KillerName.Value, 3)
-                elseif remote and remote:IsA("RemoteFunction") then
-                    remote:InvokeServer("Killer", Options.KillerName.Value)
-                    Library:Notify("Purchased Killer: " .. Options.KillerName.Value, 3)
-                end
-            end
-        end
-    end
-end)
-
--- ==========================================
---            MANUAL MOVEMENT LOGIC
--- ==========================================
-local ManualMoveGroup = Tabs.Movement:AddGroupbox({ Side = "Left", Name = "Manual Flight" })
-
-local function HandleUndergroundShift(state)
-    local char = LocalPlayer.Character
-    local hrp = char and char:FindFirstChild("HumanoidRootPart")
-    if hrp then
-        if state then hrp.CFrame = hrp.CFrame * CFrame.new(0, -15, 0)
-        else hrp.CFrame = hrp.CFrame * CFrame.new(0, 15, 0) end
-    end
-end
-
-ManualMoveGroup:AddToggle("HoverToggle", { Text = "Enable Hover", Default = false })
-ManualMoveGroup:AddSlider("HoverSpeed", { Text = "Hover Speed", Default = 50, Min = 16, Max = 200, Rounding = 0 })
-ManualMoveGroup:AddToggle("HoverUnderground", { Text = "Underground Mode", Default = false, Callback = HandleUndergroundShift })
-
-ManualMoveGroup:AddToggle("GlideToggle", { Text = "Enable Glide", Default = false })
-ManualMoveGroup:AddSlider("GlideSpeed", { Text = "Glide Speed", Default = 50, Min = 16, Max = 200, Rounding = 0 })
-
--- Manual Movement Heartbeat (Only runs if AutoFarm is OFF so they don't conflict)
-RunService.Heartbeat:Connect(function(dt)
-    if isFarming then return end -- Let AutoFarm handle movement if enabled
-
-    local char = LocalPlayer.Character
-    local hrp = char and char:FindFirstChild("HumanoidRootPart")
-    local hum = char and char:FindFirstChild("Humanoid")
-    if not (hrp and hum) then return end
-
-    local isHovering = Toggles.HoverToggle and Toggles.HoverToggle.Value
-    local isGliding = Toggles.GlideToggle and Toggles.GlideToggle.Value
-
-    if isHovering then
-        local bv = getOrMakeBV(hrp)
-        bv.Velocity = hum.MoveDirection * Options.HoverSpeed.Value
-        hum:ChangeState(Enum.HumanoidStateType.Physics)
-    elseif isGliding then
-        local bv = getOrMakeBV(hrp)
-        local moveDir = hum.MoveDirection
-        bv.Velocity = Vector3.new(moveDir.X * Options.GlideSpeed.Value, -3, moveDir.Z * Options.GlideSpeed.Value)
-        hum:ChangeState(Enum.HumanoidStateType.Physics)
-    else
-        removeBV(hrp)
-    end
-end)
-
--- Noclip logic for manual movement underground
+-- 1. Noclip Logic
 RunService.Stepped:Connect(function()
-    if isFarming then return end
     local char = LocalPlayer.Character
     if char then
-        local isHovering = Toggles.HoverToggle and Toggles.HoverToggle.Value
-        local undergroundHover = Toggles.HoverUnderground and Toggles.HoverUnderground.Value
-        if isHovering and undergroundHover then
+        local hoverUnder = Toggles.HoverToggle.Value and Toggles.HoverUnderground.Value
+        local glideUnder = Toggles.GlideToggle.Value and Toggles.GlideUnderground.Value
+        local isFarming = Toggles.AutoFarmToggle.Value
+
+        if hoverUnder or glideUnder or isFarming then
             for _, part in pairs(char:GetDescendants()) do
                 if part:IsA("BasePart") and part.CanCollide then
                     part.CanCollide = false
@@ -368,25 +110,133 @@ RunService.Stepped:Connect(function()
     end
 end)
 
--- Clean up physics object on respawn
-LocalPlayer.CharacterAdded:Connect(function(newChar)
-    local hrp = newChar:WaitForChild("HumanoidRootPart", 5)
-    if hrp then removeBV(hrp) end
+-- 2. Movement & Farming Logic (Using CFrame)
+RunService.Heartbeat:Connect(function(dt)
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    local hum = char and char:FindFirstChild("Humanoid")
+    if not (hrp and hum) then return end
+
+    -- Auto Farm Priority
+    if Toggles.AutoFarmToggle.Value then
+        local targetObj = getHitboxObjective()
+
+        if targetObj then
+            local bv = getOrMakeBV(hrp)
+            bv.Velocity = Vector3.zero
+            
+            local targetPos = targetObj.Position
+            local direction = (targetPos - hrp.Position).Unit
+            local distance = (hrp.Position - targetPos).Magnitude
+            
+            if distance > 5 then
+                -- Move directly via CFrame towards the objective
+                hrp.CFrame = hrp.CFrame + (direction * (Options.FarmSpeed.Value * dt))
+                hum:ChangeState(Enum.HumanoidStateType.Physics)
+            else
+                local prompt = targetObj.Parent:FindFirstChildWhichIsA("ProximityPrompt", true) or targetObj:FindFirstChildWhichIsA("ProximityPrompt", true)
+                if prompt then fireproximityprompt(prompt, 1, true) end
+            end
+        end
+        return 
+    end
+
+    -- Manual Movement Logic (Strict CFrame)
+    local hoverOn = Toggles.HoverToggle.Value
+    local glideOn = Toggles.GlideToggle.Value
+
+    if hoverOn then
+        local bv = getOrMakeBV(hrp)
+        bv.Velocity = Vector3.zero 
+        
+        -- CFrame movement based on Walk Direction
+        if hum.MoveDirection.Magnitude > 0 then
+            hrp.CFrame = hrp.CFrame + (hum.MoveDirection * (Options.HoverSpeed.Value * dt))
+        end
+        
+        if Toggles.HoverUnderground.Value then 
+            hrp.CFrame = CFrame.new(hrp.Position.X, 10, hrp.Position.Z) 
+        end
+        hum:ChangeState(Enum.HumanoidStateType.Physics)
+        
+    elseif glideOn then
+        local bv = getOrMakeBV(hrp)
+        bv.Velocity = Vector3.zero
+        
+        -- CFrame movement with slight Y drop (-3 * dt)
+        if hum.MoveDirection.Magnitude > 0 then
+            hrp.CFrame = hrp.CFrame + (hum.MoveDirection * (Options.GlideSpeed.Value * dt))
+        end
+        hrp.CFrame = hrp.CFrame + Vector3.new(0, -3 * dt, 0)
+        
+        if Toggles.GlideUnderground.Value then 
+            hrp.CFrame = CFrame.new(hrp.Position.X, 10, hrp.Position.Z) 
+        end
+        hum:ChangeState(Enum.HumanoidStateType.Physics)
+        
+    else
+        removeBV(hrp)
+    end
+end)
+
+-- 3. MinigameUI & Auto-Buy Logic
+task.spawn(function()
+    while task.wait(0.5) do
+        
+        -- Auto Minigame (UI)
+        if Toggles.AutoMinigame and Toggles.AutoMinigame.Value then
+            local pGui = LocalPlayer:FindFirstChild("PlayerGui")
+            if pGui then
+                local mgUI = pGui:FindFirstChild("MinigameUI")
+                if mgUI then
+                    local mg1 = mgUI:FindFirstChild("Minigame1")
+                    local mg2 = mgUI:FindFirstChild("Minigame2")
+
+                    -- Auto Fish Minigame
+                    if mg1 and mg1.Visible then
+                        -- Simulates standard clicking on the UI to bypass. 
+                        -- If the game requires RemoteEvents, they must be added here via SimpleSpy.
+                        if mg1:FindFirstChild("Button") then -- Example standard button
+                            VirtualUser:Button1Down(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
+                            VirtualUser:Button1Up(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
+                        end
+                    end
+                    
+                    -- Auto Puppet Minigame
+                    if mg2 and mg2.Visible then
+                         if mg2:FindFirstChild("Button") then
+                            VirtualUser:Button1Down(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
+                            VirtualUser:Button1Up(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
+                        end
+                    end
+                end
+            end
+        end
+
+        -- Auto Shop
+        if Toggles.AutoBuySurvivors and Toggles.AutoBuySurvivors.Value then
+            -- game:GetService("ReplicatedStorage").Remotes.Purchase:FireServer("Survivor", Options.SurvivorName.Value)
+        end
+        if Toggles.AutoBuyKillers and Toggles.AutoBuyKillers.Value then
+            -- game:GetService("ReplicatedStorage").Remotes.Purchase:FireServer("Killer", Options.KillerName.Value)
+        end
+    end
 end)
 
 -- ==========================================
---               UI SETTINGS
+--               UI SETTINGS 
 -- ==========================================
-Library:SetWatermark("ShinyLeak - Premium Automation")
-Library:Notify("Full script injected with advanced logic.", 4)
+Library:SetWatermark("ShinyLeak - Nights of Eternity")
+Library:Notify("CFrame Movement & Minigame bypass loaded!", 3)
 
+local UISettingsTab = Tabs["UI Settings"]
 ThemeManager:SetLibrary(Library)
 ThemeManager:SetFolder("ShinyLeak")
-ThemeManager:BuildGroupBox(Tabs.UISettings:AddGroupbox({ Side = "Left", Name = "Theme" }))
+ThemeManager:BuildGroupBox(UISettingsTab:AddGroupbox({ Side = "Left", Name = "Theme" }))
 
 SaveManager:SetLibrary(Library)
 SaveManager:IgnoreThemeSettings()
 SaveManager:SetIgnoreIndexes({'UISettings'})
 SaveManager:SetFolder("ShinyLeak/NightsOfEternity")
-SaveManager:BuildConfigSection(Tabs.UISettings)
+SaveManager:BuildConfigSection(UISettingsTab)
 SaveManager:LoadAutoloadConfig()
