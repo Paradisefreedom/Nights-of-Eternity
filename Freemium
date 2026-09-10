@@ -10,15 +10,6 @@ Library.ForceCheckbox = false -- Forces AddToggle to AddCheckbox
 Library.ShowToggleFrameInKeybinds = true -- Make toggle keybinds work inside the keybinds UI (aka adds a toggle to the UI). Good for mobile users (Default value = true)
 
 local Window = Library:CreateWindow({
-	-- Set Center to true if you want the menu to appear in the center
-	-- Set AutoShow to true if you want the menu to appear when it is created
-	-- Set Resizable to true if you want to have in-game resizable Window
-	-- Set MobileButtonsSide to "Left" or "Right" if you want the ui toggle & lock buttons to be on the left or right side of the window
-	-- Set ShowCustomCursor to false if you don't want to use the Linoria cursor
-	-- Set AlwaysOnTop to true if you want the menu to render above Roblox core blur (executor only)
-	-- NotifySide = Changes the side of the notifications (Left, Right) (Default value = Left)
-	-- Position and Size are also valid options here
-	-- but you do not need to define them unless you are changing them :)
 
 	Title = "ShinyLeak",
 	Footer = "version: 0",
@@ -27,13 +18,6 @@ local Window = Library:CreateWindow({
 	ShowCustomCursor = true,
 })
 
--- CALLBACK NOTE:
--- Passing in callback functions via the initial element parameters (i.e. Callback = function(Value)...) works
--- HOWEVER, using Toggles/Options.INDEX:OnChanged(function(Value) ... ) is the RECOMMENDED way to do this.
--- I strongly recommend decoupling UI code from logic code. i.e. Create your UI elements FIRST, and THEN setup :OnChanged functions later.
-
--- You do not have to set your tabs & groups up this way, just a prefrence.
--- You can find more icons in https://lucide.dev/
 local Tabs = {
 	-- Creates a new tab titled Main
 	Main = Window:AddTab("AutoFarm", "user"),
@@ -62,9 +46,50 @@ local LeftGroupBox = Tabs.Main:AddGroupbox({
 })
 
 local TabBox = Tabs.Main:AddLeftTabbox() -- Add Tabbox on left side
-
 local Tab1 = TabBox:AddTab("Emote")
 local Tab2 = TabBox:AddTab("Trait")
 
+LeftGroupBox:AddToggle("MyToggle", {
+	Text = "AutoFarm",
+	Tooltip = "This is auto farms the whole game", -- Information shown when you hover over the toggle
+	DisabledTooltip = "I am disabled!", -- Information shown when you hover over the toggle while it's disabled
 
+	Default = true, -- Default value (true / false)
+	Disabled = false, -- Will disable the toggle (true / false)
+	Visible = true, -- Will make the toggle invisible (true / false)
+	Risky = false, -- Makes the text red (the color can be changed using Library.Scheme.Red) (Default value = false)
 
+	Callback = function(Value)
+		print("[cb] MyToggle changed to:", Value)
+	end,
+})
+	:AddColorPicker("ColorPicker1", {
+		Default = Color3.new(1, 0, 0),
+		Title = "Some color1", -- Optional. Allows you to have a custom color picker title (when you open it)
+		Transparency = 0, -- Optional. Enables transparency changing for this color picker (leave as nil to disable)
+
+		Callback = function(Value)
+			print("[cb] Color changed!", Value)
+		end,
+	})
+	:AddColorPicker("ColorPicker2", {
+		Default = Color3.new(0, 1, 0),
+		Title = "Some color2",
+
+		Callback = function(Value)
+			print("[cb] Color changed!", Value)
+		end,
+	})
+
+-- Fetching a toggle object for later use:
+-- Toggles.MyToggle.Value
+
+-- Toggles is a table added to getgenv() by the library
+-- You index Toggles with the specified index, in this case it is 'MyToggle'
+-- To get the state of the toggle you do toggle.Value
+
+-- Calls the passed function when the toggle is updated
+Toggles.MyToggle:OnChanged(function()
+	-- here we get our toggle object & then get its value
+	print("MyToggle changed to:", Toggles.MyToggle.Value)
+end)
