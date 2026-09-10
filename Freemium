@@ -1,7 +1,14 @@
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+
 local LocalPlayer = Players.LocalPlayer
 
+-- ==========================================
+--            OBSIDIAN UI SETUP
+-- ==========================================
 local repo = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/"
 local Library = loadstring(game:HttpGet(repo .. "Library.lua"))()
 local ThemeManager = loadstring(game:HttpGet(repo .. "addons/ThemeManager.lua"))()
@@ -14,8 +21,8 @@ Library.ForceCheckbox = false
 Library.ShowToggleFrameInKeybinds = true 
 
 local Window = Library:CreateWindow({
-	Title = "ShinyLeak",
-	Footer = "version: 0",
+	Title = "ShinyLeak | Nights of Eternity Advanced",
+	Footer = "version: 2.0 (Premium Logic)",
 	Icon = 95816097006870,
 	NotifySide = "Right",
 	ShowCustomCursor = true,
@@ -23,119 +30,335 @@ local Window = Library:CreateWindow({
 
 local Tabs = {
 	Main = Window:AddTab("AutoFarm", "swords"),
-	Buy = Window:AddTab("Auto Buy", "shopping-cart"),
+	Buy = Window:AddTab("Auto Shop", "shopping-cart"),
+	Movement = Window:AddTab("Movement", "navigation"),
 	UISettings = Window:AddTab("UI Settings", "settings")
 }
 
 -- ==========================================
---               AUTOFARM TAB
+--            CORE VARIABLES & UTILS
 -- ==========================================
-local FarmGroup = Tabs.Main:AddGroupbox({
-	Side = "Left",
-	Name = "Farming",
-	Description = "Main farming features",
-})
+local bvName = "ShinyLeak_MovementBV"
+local currentFarmTarget = nil
+local isFarming = false
+
+-- Utility to get or create BodyVelocity for smooth hovering/dragging
+local function getOrMakeBV(hrp)
+    local bv = hrp:FindFirstChild(bvName)
+    if not bv then
+        bv = Instance.new("BodyVelocity")
+        bv.Name = bvName
+        bv.MaxForce = Vector3.new(math.huge, math.huge, math.huge) 
+        bv.Velocity = Vector3.zero
+        bv.Parent = hrp
+    end
+    return bv
+end
+
+local function removeBV(hrp)
+    local bv = hrp:FindFirstChild(bvName)
+    if bv then bv:Destroy() end
+end
+
+-- Safely parse numbers from text (handles strings like "1,500" or "2.5k")
+local function parseTokens(tokenString)
+    if type(tokenString) == "number" then return tokenString end
+    local cleanStr = string.gsub(tostring(tokenString), ",", "")
+    if string.find(cleanStr:lower(), "k") then
+        cleanStr = string.gsub(cleanStr:lower(), "k", "")
+        return tonumber(cleanStr) * 1000
+    end
+    return tonumber(cleanStr) or 0
+end
+
+-- Fetch player's current tokens dynamically
+local function getCurrentTokens()
+    -- 1st Check: Leaderstats (Standard Roblox Architecture)
+    local leaderstats = LocalPlayer:FindFirstChild("leaderstats")
+    if leaderstats then
+        local tokensObj = leaderstats:FindFirstChild("Tokens") or leaderstats:FindFirstChild("Coins") or leaderstats:FindFirstChild("Points")
+        if tokensObj then
+            return tokensObj.Value
+        end
+    end
+    
+    -- 2nd Check: PlayerGui (If the game hides it from leaderstats)
+    local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
+    if playerGui then
+        -- NOTE: You will need to update "MainUI.CurrencyFrame.Amount" to match the exact path in Nights of Eternity using Dex Explorer
+        local tokenLabel = playerGui:FindFirstChild("MainUI") and playerGui.MainUI:FindFirstChild("CurrencyFrame") and playerGui.MainUI.CurrencyFrame:FindFirstChild("Amount")
+        if tokenLabel and tokenLabel:IsA("TextLabel") then
+            return parseTokens(tokenLabel.Text)
+        end
+    end
+    
+    return 0
+end
+
+-- ==========================================
+--               AUTOFARM LOGIC
+-- ==========================================
+local FarmGroup = Tabs.Main:AddGroupbox({ Side = "Left", Name = "Minigame Automation", Description = "Completes minigames automatically" })
 
 FarmGroup:AddToggle("AutoFarmToggle", {
 	Text = "Enable AutoFarm",
-	Tooltip = "Automatically farms the game",
+	Tooltip = "Drags/Hovers you to objectives to complete the minigame",
 	Default = false, 
 	Callback = function(Value)
-		print("[AutoFarm] toggled:", Value)
+		isFarming = Value
+        if not Value and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+            removeBV(LocalPlayer.Character.HumanoidRootPart)
+        end
 	end,
 })
 
--- ==========================================
---               MOVEMENT TABBOX
--- ==========================================
-local MoveTabBox = Tabs.Main:AddRightTabbox()
-local GlideTab = MoveTabBox:AddTab("Glide")
-local HoverTab = MoveTabBox:AddTab("Hover")
+FarmGroup:AddInput("ObjectiveName", {
+    Default = "Generator",
+    Numeric = false,
+    Finished = true,
+    Text = "Objective Name",
+    Tooltip = "The exact name of the part/model to farm (e.g., Generator, EscapeDoor, Coin)",
+    Placeholder = "Enter target name...",
+})
 
--- Function to shift the player down/up when underground is toggled
-local function HandleUndergroundShift(state)
+FarmGroup:AddDropdown("FarmMethod", {
+    Values = { "Smooth Hover", "Direct Drag (Tween)", "Teleport" },
+    Default = 1,
+    Multi = false,
+    Text = "Movement Method",
+})
+
+FarmGroup:AddSlider("FarmSpeed", {
+	Text = "Farming Drag Speed",
+	Default = 35,
+	Min = 10,
+	Max = 150,
+	Rounding = 0,
+})
+
+-- Logic to find the nearest objective in the workspace
+local function getNearestObjective()
     local char = LocalPlayer.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
-    if hrp then
-        if state then
-            hrp.CFrame = hrp.CFrame * CFrame.new(0, -15, 0) -- Shift 15 studs down
-        else
-            hrp.CFrame = hrp.CFrame * CFrame.new(0, 15, 0)  -- Shift back up
+    if not hrp then return nil end
+
+    local targetName = Options.ObjectiveName.Value
+    local closestDistance = math.huge
+    local closestObj = nil
+
+    -- Assuming objectives are stored in Workspace. Look for them dynamically.
+    for _, obj in pairs(workspace:GetDescendants()) do
+        if obj.Name == targetName and obj:IsA("BasePart") then
+            local dist = (hrp.Position - obj.Position).Magnitude
+            if dist < closestDistance then
+                closestDistance = dist
+                closestObj = obj
+            end
+        elseif obj.Name == targetName and obj:IsA("Model") and obj.PrimaryPart then
+            local dist = (hrp.Position - obj.PrimaryPart.Position).Magnitude
+            if dist < closestDistance then
+                closestDistance = dist
+                closestObj = obj.PrimaryPart
+            end
+        end
+    end
+    return closestObj
+end
+
+-- AutoFarm Loop Execution
+RunService.Heartbeat:Connect(function(dt)
+    if not isFarming then return end
+    
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    local hum = char and char:FindFirstChild("Humanoid")
+    if not (hrp and hum) then return end
+
+    -- Disable collisions to prevent getting stuck while autofarming
+    for _, part in pairs(char:GetDescendants()) do
+        if part:IsA("BasePart") and part.CanCollide then
+            part.CanCollide = false
+        end
+    end
+
+    currentFarmTarget = getNearestObjective()
+    
+    if currentFarmTarget then
+        local targetPos = currentFarmTarget.Position
+        local method = Options.FarmMethod.Value
+        
+        if method == "Smooth Hover" then
+            local bv = getOrMakeBV(hrp)
+            local direction = (targetPos - hrp.Position).Unit
+            -- Hover exactly 5 studs above the target's Y level to avoid ground friction
+            local optimizedTarget = Vector3.new(targetPos.X, targetPos.Y + 5, targetPos.Z)
+            local optimizedDirection = (optimizedTarget - hrp.Position).Unit
+            
+            if (hrp.Position - optimizedTarget).Magnitude > 5 then
+                bv.Velocity = optimizedDirection * Options.FarmSpeed.Value
+                hum:ChangeState(Enum.HumanoidStateType.Physics)
+            else
+                bv.Velocity = Vector3.zero
+                -- Auto-interact with ProximityPrompts if nearby
+                local prompt = currentFarmTarget.Parent:FindFirstChildWhichIsA("ProximityPrompt", true)
+                if prompt then
+                    fireproximityprompt(prompt, 1, true)
+                end
+            end
+            
+        elseif method == "Direct Drag (Tween)" then
+            local dist = (hrp.Position - targetPos).Magnitude
+            local timeToReach = dist / Options.FarmSpeed.Value
+            
+            local tweenInfo = TweenInfo.new(timeToReach, Enum.EasingStyle.Linear)
+            local tween = TweenService:Create(hrp, tweenInfo, {CFrame = currentFarmTarget.CFrame + Vector3.new(0, 3, 0)})
+            tween:Play()
+            
+            local prompt = currentFarmTarget.Parent:FindFirstChildWhichIsA("ProximityPrompt", true)
+            if prompt and dist < 10 then
+                fireproximityprompt(prompt, 1, true)
+            end
+            
+        elseif method == "Teleport" then
+            hrp.CFrame = currentFarmTarget.CFrame * CFrame.new(0, 3, 0)
+            local prompt = currentFarmTarget.Parent:FindFirstChildWhichIsA("ProximityPrompt", true)
+            if prompt then
+                fireproximityprompt(prompt, 1, true)
+            end
+        end
+    end
+end)
+
+-- ==========================================
+--               AUTO SHOP / BUY LOGIC
+-- ==========================================
+local BuySurvivorsGroup = Tabs.Buy:AddGroupbox({ Side = "Left", Name = "Survivors Auto-Buy" })
+local BuyKillersGroup = Tabs.Buy:AddGroupbox({ Side = "Right", Name = "Killers Auto-Buy" })
+
+-- Target names/remotes for the user to configure
+BuySurvivorsGroup:AddInput("SurvivorName", { Default = "Basic Survivor", Text = "Target Survivor Name" })
+BuySurvivorsGroup:AddInput("SurvivorCost", { Default = "500", Text = "Survivor Cost" })
+BuySurvivorsGroup:AddToggle("AutoBuySurvivors", { Text = "Enable Auto Buy Survivor", Default = false })
+
+BuyKillersGroup:AddInput("KillerName", { Default = "Basic Killer", Text = "Target Killer Name" })
+BuyKillersGroup:AddInput("KillerCost", { Default = "1000", Text = "Killer Cost" })
+BuyKillersGroup:AddToggle("AutoBuyKillers", { Text = "Enable Auto Buy Killer", Default = false })
+
+-- Function to handle opening the shop UI
+local function openShopGUI()
+    local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
+    if playerGui then
+        -- NOTE: Change "ShopGui" to the exact name of the ScreenGui in Nights of Eternity
+        local shop = playerGui:FindFirstChild("ShopGui") or playerGui:FindFirstChild("MainUI")
+        if shop and shop:FindFirstChild("ShopFrame", true) then
+            local frame = shop:FindFirstChild("ShopFrame", true)
+            if not frame.Visible then
+                frame.Visible = true
+            end
         end
     end
 end
 
--- // GLIDE UI \\ --
-GlideTab:AddToggle("GlideToggle", {
-	Text = "Enable Glide",
-	Default = false
-})
-GlideTab:AddSlider("GlideSpeed", {
-	Text = "Glide Speed",
-	Default = 50,
-	Min = 16,
-	Max = 200,
-	Rounding = 0,
-})
-GlideTab:AddToggle("GlideUnderground", {
-	Text = "Underground Mode",
-	Default = false,
-    Callback = HandleUndergroundShift
-})
-
--- // HOVER UI \\ --
-HoverTab:AddToggle("HoverToggle", {
-	Text = "Enable Hover",
-	Default = false
-})
-HoverTab:AddSlider("HoverSpeed", {
-	Text = "Hover Speed",
-	Default = 50,
-	Min = 16,
-	Max = 200,
-	Rounding = 0,
-})
-HoverTab:AddToggle("HoverUnderground", {
-	Text = "Underground Mode",
-	Default = false,
-    Callback = HandleUndergroundShift
-})
-
--- ==========================================
---               AUTO BUY TAB
--- ==========================================
-local BuySurvivorsGroup = Tabs.Buy:AddGroupbox({
-	Side = "Left", 
-	Name = "Survivors",
-})
-BuySurvivorsGroup:AddToggle("AutoBuySurvivors", {
-	Text = "Auto Buy Survivors",
-	Default = false,
-})
-
-local BuyKillersGroup = Tabs.Buy:AddGroupbox({
-	Side = "Right", 
-	Name = "Killers",
-})
-BuyKillersGroup:AddToggle("AutoBuyKillers", {
-	Text = "Auto Buy Killers",
-	Default = false,
-})
+-- Continuous Auto-Buy Loop
+task.spawn(function()
+    while task.wait(2) do -- Check every 2 seconds to avoid rate limits
+        local tokens = getCurrentTokens()
+        
+        -- Process Survivor Auto-Buy
+        if Toggles.AutoBuySurvivors and Toggles.AutoBuySurvivors.Value then
+            local reqTokens = tonumber(Options.SurvivorCost.Value) or math.huge
+            if tokens >= reqTokens then
+                openShopGUI()
+                task.wait(0.5) -- Give UI time to register
+                
+                -- NOTE: You must update this RemoteEvent path using Dex. 
+                -- Example standard path: ReplicatedStorage.Remotes.BuyItem:FireServer("Survivor", "Name")
+                local remote = ReplicatedStorage:FindFirstChild("BuyItem", true) or ReplicatedStorage:FindFirstChild("Purchase", true)
+                if remote and remote:IsA("RemoteEvent") then
+                    remote:FireServer("Survivor", Options.SurvivorName.Value)
+                    Library:Notify("Purchased Survivor: " .. Options.SurvivorName.Value, 3)
+                elseif remote and remote:IsA("RemoteFunction") then
+                    remote:InvokeServer("Survivor", Options.SurvivorName.Value)
+                    Library:Notify("Purchased Survivor: " .. Options.SurvivorName.Value, 3)
+                end
+            end
+        end
+        
+        -- Process Killer Auto-Buy
+        if Toggles.AutoBuyKillers and Toggles.AutoBuyKillers.Value then
+            local reqTokens = tonumber(Options.KillerCost.Value) or math.huge
+            if tokens >= reqTokens then
+                openShopGUI()
+                task.wait(0.5)
+                
+                local remote = ReplicatedStorage:FindFirstChild("BuyItem", true) or ReplicatedStorage:FindFirstChild("Purchase", true)
+                if remote and remote:IsA("RemoteEvent") then
+                    remote:FireServer("Killer", Options.KillerName.Value)
+                    Library:Notify("Purchased Killer: " .. Options.KillerName.Value, 3)
+                elseif remote and remote:IsA("RemoteFunction") then
+                    remote:InvokeServer("Killer", Options.KillerName.Value)
+                    Library:Notify("Purchased Killer: " .. Options.KillerName.Value, 3)
+                end
+            end
+        end
+    end
+end)
 
 -- ==========================================
---            MOVEMENT LOGIC LOOP
+--            MANUAL MOVEMENT LOGIC
 -- ==========================================
+local ManualMoveGroup = Tabs.Movement:AddGroupbox({ Side = "Left", Name = "Manual Flight" })
 
--- Noclip loop (Prevents getting stuck or glitching while underground)
+local function HandleUndergroundShift(state)
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if hrp then
+        if state then hrp.CFrame = hrp.CFrame * CFrame.new(0, -15, 0)
+        else hrp.CFrame = hrp.CFrame * CFrame.new(0, 15, 0) end
+    end
+end
+
+ManualMoveGroup:AddToggle("HoverToggle", { Text = "Enable Hover", Default = false })
+ManualMoveGroup:AddSlider("HoverSpeed", { Text = "Hover Speed", Default = 50, Min = 16, Max = 200, Rounding = 0 })
+ManualMoveGroup:AddToggle("HoverUnderground", { Text = "Underground Mode", Default = false, Callback = HandleUndergroundShift })
+
+ManualMoveGroup:AddToggle("GlideToggle", { Text = "Enable Glide", Default = false })
+ManualMoveGroup:AddSlider("GlideSpeed", { Text = "Glide Speed", Default = 50, Min = 16, Max = 200, Rounding = 0 })
+
+-- Manual Movement Heartbeat (Only runs if AutoFarm is OFF so they don't conflict)
+RunService.Heartbeat:Connect(function(dt)
+    if isFarming then return end -- Let AutoFarm handle movement if enabled
+
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    local hum = char and char:FindFirstChild("Humanoid")
+    if not (hrp and hum) then return end
+
+    local isHovering = Toggles.HoverToggle and Toggles.HoverToggle.Value
+    local isGliding = Toggles.GlideToggle and Toggles.GlideToggle.Value
+
+    if isHovering then
+        local bv = getOrMakeBV(hrp)
+        bv.Velocity = hum.MoveDirection * Options.HoverSpeed.Value
+        hum:ChangeState(Enum.HumanoidStateType.Physics)
+    elseif isGliding then
+        local bv = getOrMakeBV(hrp)
+        local moveDir = hum.MoveDirection
+        bv.Velocity = Vector3.new(moveDir.X * Options.GlideSpeed.Value, -3, moveDir.Z * Options.GlideSpeed.Value)
+        hum:ChangeState(Enum.HumanoidStateType.Physics)
+    else
+        removeBV(hrp)
+    end
+end)
+
+-- Noclip logic for manual movement underground
 RunService.Stepped:Connect(function()
+    if isFarming then return end
     local char = LocalPlayer.Character
     if char then
         local isHovering = Toggles.HoverToggle and Toggles.HoverToggle.Value
-        local isGliding = Toggles.GlideToggle and Toggles.GlideToggle.Value
         local undergroundHover = Toggles.HoverUnderground and Toggles.HoverUnderground.Value
-        local undergroundGlide = Toggles.GlideUnderground and Toggles.GlideUnderground.Value
-
-        if (isHovering and undergroundHover) or (isGliding and undergroundGlide) then
+        if isHovering and undergroundHover then
             for _, part in pairs(char:GetDescendants()) do
                 if part:IsA("BasePart") and part.CanCollide then
                     part.CanCollide = false
@@ -145,39 +368,17 @@ RunService.Stepped:Connect(function()
     end
 end)
 
--- Actual Movement loop (Manipulates HumanoidRootPart directly)
-RunService.Heartbeat:Connect(function(dt)
-    local char = LocalPlayer.Character
-    local hrp = char and char:FindFirstChild("HumanoidRootPart")
-    local hum = char and char:FindFirstChild("Humanoid")
-
-    if hrp and hum then
-        if Toggles.HoverToggle and Toggles.HoverToggle.Value then
-            -- Kill Y-velocity so gravity doesn't pull you down
-            hrp.Velocity = Vector3.new(0, 0, 0) 
-            
-            -- Move based on walk direction (WASD/Joystick)
-            if hum.MoveDirection.Magnitude > 0 then
-                hrp.CFrame = hrp.CFrame + (hum.MoveDirection * Options.HoverSpeed.Value * dt)
-            end
-            
-        elseif Toggles.GlideToggle and Toggles.GlideToggle.Value then
-            -- Slight negative Y-velocity to slowly fall
-            hrp.Velocity = Vector3.new(0, -5, 0)
-            
-            -- Move forward
-            if hum.MoveDirection.Magnitude > 0 then
-                hrp.CFrame = hrp.CFrame + (hum.MoveDirection * Options.GlideSpeed.Value * dt)
-            end
-        end
-    end
+-- Clean up physics object on respawn
+LocalPlayer.CharacterAdded:Connect(function(newChar)
+    local hrp = newChar:WaitForChild("HumanoidRootPart", 5)
+    if hrp then removeBV(hrp) end
 end)
 
 -- ==========================================
---               UI SETTINGS TAB
+--               UI SETTINGS
 -- ==========================================
-Library:SetWatermark("ShinyLeak - Nights of Eternity")
-Library:Notify("Movement features added!", 3)
+Library:SetWatermark("ShinyLeak - Premium Automation")
+Library:Notify("Full script injected with advanced logic.", 4)
 
 ThemeManager:SetLibrary(Library)
 ThemeManager:SetFolder("ShinyLeak")
