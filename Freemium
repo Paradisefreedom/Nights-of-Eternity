@@ -16,7 +16,7 @@ Library.ShowToggleFrameInKeybinds = true
 
 local Window = Library:CreateWindow({
 	Title = "ShinyLeak",
-	Footer = "version: 3.0",
+	Footer = "version: 3.1",
 	Icon = 95816097006870,
 	NotifySide = "Right",
 	ShowCustomCursor = true,
@@ -33,7 +33,8 @@ local Tabs = {
 
 local FarmGroup = Tabs.Main:AddGroupbox({ Side = "Left", Name = "AutoFarm", Description = "Complete minigames" })
 FarmGroup:AddToggle("AutoFarmToggle", { Text = "Enable AutoFarm", Default = false })
-FarmGroup:AddToggle("AutoMinigame", { Text = "Auto-Complete UI Minigames", Default = false, Tooltip = "Auto completes Fish and Puppet minigames" })
+FarmGroup:AddInput("ObjectiveName", { Default = "HitboxFollowModel", Text = "Objective Name" })
+FarmGroup:AddToggle("AutoMinigame", { Text = "Auto-Complete UI Minigames", Default = false })
 FarmGroup:AddSlider("FarmSpeed", { Text = "Farm Speed", Default = 35, Min = 10, Max = 150, Rounding = 0 })
 
 local MoveTabBox = Tabs.Main:AddLeftTabbox() 
@@ -61,14 +62,13 @@ BuyKillersGroup:AddInput("KillerName", { Default = "Basic Killer", Text = "Targe
 -- ==========================================
 local bvName = "ShinyLeakMovement"
 
--- Keeps gravity disabled so CFrame movement is perfectly smooth
 local function getOrMakeBV(hrp)
     local bv = hrp:FindFirstChild(bvName)
     if not bv then
         bv = Instance.new("BodyVelocity")
         bv.Name = bvName
         bv.MaxForce = Vector3.new(math.huge, math.huge, math.huge) 
-        bv.Velocity = Vector3.zero -- Zero velocity ensures gravity doesn't fight the CFrame
+        bv.Velocity = Vector3.zero 
         bv.Parent = hrp
     end
     return bv
@@ -79,17 +79,42 @@ local function removeBV(hrp)
     if bv then bv:Destroy() end
 end
 
--- Find any objective starting with "HitboxFollowModel"
-local function getHitboxObjective()
+-- Smarter target finder (Finds the closest valid objective)
+local function getNearestObjective(hrp)
+    local targetName = Options.ObjectiveName.Value
+    if targetName == "" then return nil end
+
+    local closestPart = nil
+    local shortestDistance = math.huge
+
     for _, obj in pairs(workspace:GetDescendants()) do
-        if obj.Name:sub(1, 17) == "HitboxFollowModel" then
-            if obj:IsA("BasePart") then return obj end
-            if obj:IsA("Model") and obj.PrimaryPart then return obj.PrimaryPart end
-            local part = obj:FindFirstChildWhichIsA("BasePart")
-            if part then return part end
+        if string.find(obj.Name, targetName) then
+            local part = nil
+            
+            if obj:IsA("BasePart") then 
+                part = obj 
+            elseif obj:IsA("Model") then 
+                part = obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart", true)
+            elseif obj:IsA("Folder") then
+                part = obj:FindFirstChildWhichIsA("BasePart", true)
+            end
+            
+            if part then
+                -- Make sure it has an interact prompt nearby so we don't go to broken ones
+                local prompt = part:FindFirstChildWhichIsA("ProximityPrompt", true) 
+                            or (part.Parent and part.Parent:FindFirstChildWhichIsA("ProximityPrompt", true))
+                
+                if prompt then
+                    local distance = (hrp.Position - part.Position).Magnitude
+                    if distance < shortestDistance then
+                        shortestDistance = distance
+                        closestPart = part
+                    end
+                end
+            end
         end
     end
-    return nil
+    return closestPart
 end
 
 -- 1. Noclip Logic
@@ -119,24 +144,29 @@ RunService.Heartbeat:Connect(function(dt)
 
     -- Auto Farm Priority
     if Toggles.AutoFarmToggle.Value then
-        local targetObj = getHitboxObjective()
+        local targetObj = getNearestObjective(hrp)
 
         if targetObj then
             local bv = getOrMakeBV(hrp)
             bv.Velocity = Vector3.zero
             
             local targetPos = targetObj.Position
-            local direction = (targetPos - hrp.Position).Unit
-            local distance = (hrp.Position - targetPos).Magnitude
+            -- Hover slightly above to avoid clipping underground
+            local hoverPos = targetPos + Vector3.new(0, 3, 0)
+            local direction = (hoverPos - hrp.Position).Unit
+            local distance = (hrp.Position - hoverPos).Magnitude
             
-            if distance > 5 then
-                -- Move directly via CFrame towards the objective
+            if distance > 4 then
                 hrp.CFrame = hrp.CFrame + (direction * (Options.FarmSpeed.Value * dt))
                 hum:ChangeState(Enum.HumanoidStateType.Physics)
             else
-                local prompt = targetObj.Parent:FindFirstChildWhichIsA("ProximityPrompt", true) or targetObj:FindFirstChildWhichIsA("ProximityPrompt", true)
+                local prompt = targetObj:FindFirstChildWhichIsA("ProximityPrompt", true) 
+                            or (targetObj.Parent and targetObj.Parent:FindFirstChildWhichIsA("ProximityPrompt", true))
                 if prompt then fireproximityprompt(prompt, 1, true) end
             end
+        else
+            -- If it can't find an objective, stop moving so you don't drift away
+            removeBV(hrp)
         end
         return 
     end
@@ -149,7 +179,6 @@ RunService.Heartbeat:Connect(function(dt)
         local bv = getOrMakeBV(hrp)
         bv.Velocity = Vector3.zero 
         
-        -- CFrame movement based on Walk Direction
         if hum.MoveDirection.Magnitude > 0 then
             hrp.CFrame = hrp.CFrame + (hum.MoveDirection * (Options.HoverSpeed.Value * dt))
         end
@@ -163,7 +192,6 @@ RunService.Heartbeat:Connect(function(dt)
         local bv = getOrMakeBV(hrp)
         bv.Velocity = Vector3.zero
         
-        -- CFrame movement with slight Y drop (-3 * dt)
         if hum.MoveDirection.Magnitude > 0 then
             hrp.CFrame = hrp.CFrame + (hum.MoveDirection * (Options.GlideSpeed.Value * dt))
         end
@@ -192,17 +220,13 @@ task.spawn(function()
                     local mg1 = mgUI:FindFirstChild("Minigame1")
                     local mg2 = mgUI:FindFirstChild("Minigame2")
 
-                    -- Auto Fish Minigame
                     if mg1 and mg1.Visible then
-                        -- Simulates standard clicking on the UI to bypass. 
-                        -- If the game requires RemoteEvents, they must be added here via SimpleSpy.
-                        if mg1:FindFirstChild("Button") then -- Example standard button
+                        if mg1:FindFirstChild("Button") then 
                             VirtualUser:Button1Down(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
                             VirtualUser:Button1Up(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
                         end
                     end
                     
-                    -- Auto Puppet Minigame
                     if mg2 and mg2.Visible then
                          if mg2:FindFirstChild("Button") then
                             VirtualUser:Button1Down(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
@@ -212,14 +236,6 @@ task.spawn(function()
                 end
             end
         end
-
-        -- Auto Shop
-        if Toggles.AutoBuySurvivors and Toggles.AutoBuySurvivors.Value then
-            -- game:GetService("ReplicatedStorage").Remotes.Purchase:FireServer("Survivor", Options.SurvivorName.Value)
-        end
-        if Toggles.AutoBuyKillers and Toggles.AutoBuyKillers.Value then
-            -- game:GetService("ReplicatedStorage").Remotes.Purchase:FireServer("Killer", Options.KillerName.Value)
-        end
     end
 end)
 
@@ -227,7 +243,7 @@ end)
 --               UI SETTINGS 
 -- ==========================================
 Library:SetWatermark("ShinyLeak - Nights of Eternity")
-Library:Notify("CFrame Movement & Minigame bypass loaded!", 3)
+Library:Notify("Smart Targeting Loaded!", 3)
 
 local UISettingsTab = Tabs["UI Settings"]
 ThemeManager:SetLibrary(Library)
