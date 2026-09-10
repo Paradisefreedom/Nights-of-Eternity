@@ -1,6 +1,6 @@
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
-local VirtualUser = game:GetService("VirtualUser")
+local VirtualInputManager = game:GetService("VirtualInputManager")
 local LocalPlayer = Players.LocalPlayer
 
 local repo = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/"
@@ -16,7 +16,7 @@ Library.ShowToggleFrameInKeybinds = true
 
 local Window = Library:CreateWindow({
 	Title = "ShinyLeak",
-	Footer = "version: 3.1",
+	Footer = "version: 4.0 | CFrame & VIM",
 	Icon = 95816097006870,
 	NotifySide = "Right",
 	ShowCustomCursor = true,
@@ -33,7 +33,8 @@ local Tabs = {
 
 local FarmGroup = Tabs.Main:AddGroupbox({ Side = "Left", Name = "AutoFarm", Description = "Complete minigames" })
 FarmGroup:AddToggle("AutoFarmToggle", { Text = "Enable AutoFarm", Default = false })
-FarmGroup:AddInput("ObjectiveName", { Default = "HitboxFollowModel", Text = "Objective Name" })
+-- Changed default to Arcade per your instructions
+FarmGroup:AddInput("ObjectiveName", { Default = "Arcade", Text = "Objective Name" })
 FarmGroup:AddToggle("AutoMinigame", { Text = "Auto-Complete UI Minigames", Default = false })
 FarmGroup:AddSlider("FarmSpeed", { Text = "Farm Speed", Default = 35, Min = 10, Max = 150, Rounding = 0 })
 
@@ -61,7 +62,9 @@ BuyKillersGroup:AddInput("KillerName", { Default = "Basic Killer", Text = "Targe
 --               LOGIC LOOP
 -- ==========================================
 local bvName = "ShinyLeakMovement"
+local isHoldingF = false 
 
+-- Keeps gravity disabled so pure CFrame math works perfectly
 local function getOrMakeBV(hrp)
     local bv = hrp:FindFirstChild(bvName)
     if not bv then
@@ -79,37 +82,25 @@ local function removeBV(hrp)
     if bv then bv:Destroy() end
 end
 
--- Smarter target finder (Finds the closest valid objective)
+-- Searches workspace (and ReplicatedStorage if cloned) for the objective
 local function getNearestObjective(hrp)
-    local targetName = Options.ObjectiveName.Value
+    local targetName = Options.ObjectiveName.Value:lower()
     if targetName == "" then return nil end
 
     local closestPart = nil
-    local shortestDistance = math.huge
+    local shortestDist = math.huge
 
     for _, obj in pairs(workspace:GetDescendants()) do
-        if string.find(obj.Name, targetName) then
+        if obj.Name:lower():match(targetName) then
             local part = nil
-            
-            if obj:IsA("BasePart") then 
-                part = obj 
-            elseif obj:IsA("Model") then 
-                part = obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart", true)
-            elseif obj:IsA("Folder") then
-                part = obj:FindFirstChildWhichIsA("BasePart", true)
-            end
+            if obj:IsA("BasePart") then part = obj 
+            elseif obj:IsA("Model") then part = obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart", true) end
             
             if part then
-                -- Make sure it has an interact prompt nearby so we don't go to broken ones
-                local prompt = part:FindFirstChildWhichIsA("ProximityPrompt", true) 
-                            or (part.Parent and part.Parent:FindFirstChildWhichIsA("ProximityPrompt", true))
-                
-                if prompt then
-                    local distance = (hrp.Position - part.Position).Magnitude
-                    if distance < shortestDistance then
-                        shortestDistance = distance
-                        closestPart = part
-                    end
+                local dist = (hrp.Position - part.Position).Magnitude
+                if dist < shortestDist then
+                    shortestDist = dist
+                    closestPart = part
                 end
             end
         end
@@ -135,43 +126,69 @@ RunService.Stepped:Connect(function()
     end
 end)
 
--- 2. Movement & Farming Logic (Using CFrame)
+-- 2. Movement & Farming Logic (Strictly CFrame)
 RunService.Heartbeat:Connect(function(dt)
     local char = LocalPlayer.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
     local hum = char and char:FindFirstChild("Humanoid")
     if not (hrp and hum) then return end
 
-    -- Auto Farm Priority
+    -- --- AUTO FARM PRIORITY ---
     if Toggles.AutoFarmToggle.Value then
-        local targetObj = getNearestObjective(hrp)
+        -- Pause movement if a minigame is actively on the screen
+        local pGui = LocalPlayer:FindFirstChild("PlayerGui")
+        local isPlayingMinigame = false
+        if pGui then
+            local mgUI = pGui:FindFirstChild("MinigameUI")
+            if mgUI and ((mgUI:FindFirstChild("Minigame1") and mgUI.Minigame1.Visible) or (mgUI:FindFirstChild("Minigame2") and mgUI.Minigame2.Visible)) then
+                isPlayingMinigame = true
+            end
+        end
 
+        if isPlayingMinigame then
+            getOrMakeBV(hrp).Velocity = Vector3.zero
+            return -- Stop moving towards Arcade, just play the UI game
+        end
+
+        local targetObj = getNearestObjective(hrp)
         if targetObj then
             local bv = getOrMakeBV(hrp)
             bv.Velocity = Vector3.zero
             
-            local targetPos = targetObj.Position
-            -- Hover slightly above to avoid clipping underground
-            local hoverPos = targetPos + Vector3.new(0, 3, 0)
-            local direction = (hoverPos - hrp.Position).Unit
-            local distance = (hrp.Position - hoverPos).Magnitude
+            local targetPos = targetObj.Position + Vector3.new(0, 3, 0)
+            local direction = (targetPos - hrp.Position).Unit
+            local distance = (hrp.Position - targetPos).Magnitude
             
+            -- Pure CFrame Drag
             if distance > 4 then
                 hrp.CFrame = hrp.CFrame + (direction * (Options.FarmSpeed.Value * dt))
                 hum:ChangeState(Enum.HumanoidStateType.Physics)
+                
+                if isHoldingF then
+                    VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.F, false, game)
+                    isHoldingF = false
+                end
             else
-                local prompt = targetObj:FindFirstChildWhichIsA("ProximityPrompt", true) 
-                            or (targetObj.Parent and targetObj.Parent:FindFirstChildWhichIsA("ProximityPrompt", true))
+                -- Once we arrive, trigger the arcade
+                local prompt = targetObj:FindFirstChildWhichIsA("ProximityPrompt", true) or (targetObj.Parent and targetObj.Parent:FindFirstChildWhichIsA("ProximityPrompt", true))
                 if prompt then fireproximityprompt(prompt, 1, true) end
+                
+                -- Fake Hardware holding 'F'
+                if not isHoldingF then
+                    VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.F, false, game)
+                    isHoldingF = true
+                end
             end
         else
-            -- If it can't find an objective, stop moving so you don't drift away
-            removeBV(hrp)
+            if isHoldingF then
+                VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.F, false, game)
+                isHoldingF = false
+            end
         end
         return 
     end
 
-    -- Manual Movement Logic (Strict CFrame)
+    -- --- MANUAL MOVEMENT (Strict CFrame) ---
     local hoverOn = Toggles.HoverToggle.Value
     local glideOn = Toggles.GlideToggle.Value
 
@@ -182,10 +199,7 @@ RunService.Heartbeat:Connect(function(dt)
         if hum.MoveDirection.Magnitude > 0 then
             hrp.CFrame = hrp.CFrame + (hum.MoveDirection * (Options.HoverSpeed.Value * dt))
         end
-        
-        if Toggles.HoverUnderground.Value then 
-            hrp.CFrame = CFrame.new(hrp.Position.X, 10, hrp.Position.Z) 
-        end
+        if Toggles.HoverUnderground.Value then hrp.CFrame = CFrame.new(hrp.Position.X, 10, hrp.Position.Z) end
         hum:ChangeState(Enum.HumanoidStateType.Physics)
         
     elseif glideOn then
@@ -196,43 +210,73 @@ RunService.Heartbeat:Connect(function(dt)
             hrp.CFrame = hrp.CFrame + (hum.MoveDirection * (Options.GlideSpeed.Value * dt))
         end
         hrp.CFrame = hrp.CFrame + Vector3.new(0, -3 * dt, 0)
-        
-        if Toggles.GlideUnderground.Value then 
-            hrp.CFrame = CFrame.new(hrp.Position.X, 10, hrp.Position.Z) 
-        end
+        if Toggles.GlideUnderground.Value then hrp.CFrame = CFrame.new(hrp.Position.X, 10, hrp.Position.Z) end
         hum:ChangeState(Enum.HumanoidStateType.Physics)
-        
     else
         removeBV(hrp)
     end
 end)
 
--- 3. MinigameUI & Auto-Buy Logic
+-- 3. Minigame UI Solvers
 task.spawn(function()
-    while task.wait(0.5) do
-        
-        -- Auto Minigame (UI)
+    while task.wait(0.1) do
         if Toggles.AutoMinigame and Toggles.AutoMinigame.Value then
             local pGui = LocalPlayer:FindFirstChild("PlayerGui")
-            if pGui then
-                local mgUI = pGui:FindFirstChild("MinigameUI")
-                if mgUI then
-                    local mg1 = mgUI:FindFirstChild("Minigame1")
-                    local mg2 = mgUI:FindFirstChild("Minigame2")
+            if not pGui then continue end
+            
+            local mgUI = pGui:FindFirstChild("MinigameUI")
+            if not mgUI then continue end
 
-                    if mg1 and mg1.Visible then
-                        if mg1:FindFirstChild("Button") then 
-                            VirtualUser:Button1Down(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
-                            VirtualUser:Button1Up(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
-                        end
-                    end
+            local mg1 = mgUI:FindFirstChild("Minigame1") -- Fishing
+            local mg2 = mgUI:FindFirstChild("Minigame2") -- Puppet
+
+            -- ==========================
+            -- FISHING MINIGAME LOGIC
+            -- ==========================
+            if mg1 and mg1.Visible then
+                -- Note: Change "Fish" and "Rod" if they are named differently inside Minigame1 using Dex
+                local fish = mg1:FindFirstChild("Fish", true) or mg1:FindFirstChild("FishIcon", true)
+                local rod = mg1:FindFirstChild("Rod", true) or mg1:FindFirstChild("Hook", true) or mg1:FindFirstChild("CatchArea", true)
+
+                if fish and rod then
+                    local distance = (fish.AbsolutePosition - rod.AbsolutePosition).Magnitude
                     
-                    if mg2 and mg2.Visible then
-                         if mg2:FindFirstChild("Button") then
-                            VirtualUser:Button1Down(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
-                            VirtualUser:Button1Up(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
-                        end
+                    -- If the fish is close to the rod area, send a fake mouse click
+                    if distance < 40 then 
+                        -- Get the center of the UI element to click
+                        local centerX = fish.AbsolutePosition.X + (fish.AbsoluteSize.X / 2)
+                        local centerY = fish.AbsolutePosition.Y + (fish.AbsoluteSize.Y / 2)
+                        
+                        VirtualInputManager:SendMouseButtonEvent(centerX, centerY, 0, true, game, 0)
+                        task.wait(0.05)
+                        VirtualInputManager:SendMouseButtonEvent(centerX, centerY, 0, false, game, 0)
                     end
+                end
+            end
+            
+            -- ==========================
+            -- PUPPET MINIGAME LOGIC
+            -- ==========================
+            if mg2 and mg2.Visible then
+                -- Note: Search for "Present" and the "Person/Target"
+                local present = mg2:FindFirstChild("Present", true) or mg2:FindFirstChild("Box", true)
+                local targetPerson = mg2:FindFirstChild("Person", true) or mg2:FindFirstChild("DropZone", true)
+                
+                if present and targetPerson then
+                    local pX = present.AbsolutePosition.X + (present.AbsoluteSize.X / 2)
+                    local pY = present.AbsolutePosition.Y + (present.AbsoluteSize.Y / 2)
+                    
+                    local tX = targetPerson.AbsolutePosition.X + (targetPerson.AbsoluteSize.X / 2)
+                    local tY = targetPerson.AbsolutePosition.Y + (targetPerson.AbsoluteSize.Y / 2)
+
+                    -- 1. Click and hold the present
+                    VirtualInputManager:SendMouseButtonEvent(pX, pY, 0, true, game, 0)
+                    task.wait(0.05)
+                    -- 2. Drag mouse to the person
+                    VirtualInputManager:SendMouseMotionEvent(tX, tY, 0, game)
+                    task.wait(0.05)
+                    -- 3. Release mouse to drop
+                    VirtualInputManager:SendMouseButtonEvent(tX, tY, 0, false, game, 0)
                 end
             end
         end
@@ -243,7 +287,7 @@ end)
 --               UI SETTINGS 
 -- ==========================================
 Library:SetWatermark("ShinyLeak - Nights of Eternity")
-Library:Notify("Smart Targeting Loaded!", 3)
+Library:Notify("CFrame + Arcade Target injected!", 3)
 
 local UISettingsTab = Tabs["UI Settings"]
 ThemeManager:SetLibrary(Library)
