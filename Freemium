@@ -1,3 +1,7 @@
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local LocalPlayer = Players.LocalPlayer
+
 local repo = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/"
 local Library = loadstring(game:HttpGet(repo .. "Library.lua"))()
 local ThemeManager = loadstring(game:HttpGet(repo .. "addons/ThemeManager.lua"))()
@@ -10,14 +14,13 @@ Library.ForceCheckbox = false
 Library.ShowToggleFrameInKeybinds = true 
 
 local Window = Library:CreateWindow({
-	Title = "ShinyLeak | Nights of Eternity",
-	Footer = "version: 1.0",
+	Title = "ShinyLeak",
+	Footer = "version: 0",
 	Icon = 95816097006870,
 	NotifySide = "Right",
 	ShowCustomCursor = true,
 })
 
--- 1. Create your Tabs correctly (Name, Icon)
 local Tabs = {
 	Main = Window:AddTab("AutoFarm", "swords"),
 	Buy = Window:AddTab("Auto Buy", "shopping-cart"),
@@ -37,64 +40,149 @@ FarmGroup:AddToggle("AutoFarmToggle", {
 	Text = "Enable AutoFarm",
 	Tooltip = "Automatically farms the game",
 	Default = false, 
-	
 	Callback = function(Value)
 		print("[AutoFarm] toggled:", Value)
-        -- TODO: Add your AutoFarm while loop or RunService logic here
 	end,
+})
+
+-- ==========================================
+--               MOVEMENT TABBOX
+-- ==========================================
+local MoveTabBox = Tabs.Main:AddRightTabbox()
+local GlideTab = MoveTabBox:AddTab("Glide")
+local HoverTab = MoveTabBox:AddTab("Hover")
+
+-- Function to shift the player down/up when underground is toggled
+local function HandleUndergroundShift(state)
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if hrp then
+        if state then
+            hrp.CFrame = hrp.CFrame * CFrame.new(0, -15, 0) -- Shift 15 studs down
+        else
+            hrp.CFrame = hrp.CFrame * CFrame.new(0, 15, 0)  -- Shift back up
+        end
+    end
+end
+
+-- // GLIDE UI \\ --
+GlideTab:AddToggle("GlideToggle", {
+	Text = "Enable Glide",
+	Default = false
+})
+GlideTab:AddSlider("GlideSpeed", {
+	Text = "Glide Speed",
+	Default = 50,
+	Min = 16,
+	Max = 200,
+	Rounding = 0,
+})
+GlideTab:AddToggle("GlideUnderground", {
+	Text = "Underground Mode",
+	Default = false,
+    Callback = HandleUndergroundShift
+})
+
+-- // HOVER UI \\ --
+HoverTab:AddToggle("HoverToggle", {
+	Text = "Enable Hover",
+	Default = false
+})
+HoverTab:AddSlider("HoverSpeed", {
+	Text = "Hover Speed",
+	Default = 50,
+	Min = 16,
+	Max = 200,
+	Rounding = 0,
+})
+HoverTab:AddToggle("HoverUnderground", {
+	Text = "Underground Mode",
+	Default = false,
+    Callback = HandleUndergroundShift
 })
 
 -- ==========================================
 --               AUTO BUY TAB
 -- ==========================================
--- Left Side: Survivors
 local BuySurvivorsGroup = Tabs.Buy:AddGroupbox({
 	Side = "Left", 
 	Name = "Survivors",
-	Description = "Auto purchase Survivors",
 })
-
 BuySurvivorsGroup:AddToggle("AutoBuySurvivors", {
 	Text = "Auto Buy Survivors",
 	Default = false,
-	Callback = function(Value)
-		print("[Survivors] toggled:", Value)
-        -- TODO: Add RemoteEvent firing logic to buy survivors
-	end,
 })
 
--- Right Side: Killers
 local BuyKillersGroup = Tabs.Buy:AddGroupbox({
 	Side = "Right", 
 	Name = "Killers",
-	Description = "Auto purchase Killers",
 })
-
 BuyKillersGroup:AddToggle("AutoBuyKillers", {
 	Text = "Auto Buy Killers",
 	Default = false,
-	Callback = function(Value)
-		print("[Killers] toggled:", Value)
-        -- TODO: Add RemoteEvent firing logic to buy killers
-	end,
 })
+
+-- ==========================================
+--            MOVEMENT LOGIC LOOP
+-- ==========================================
+
+-- Noclip loop (Prevents getting stuck or glitching while underground)
+RunService.Stepped:Connect(function()
+    local char = LocalPlayer.Character
+    if char then
+        local isHovering = Toggles.HoverToggle and Toggles.HoverToggle.Value
+        local isGliding = Toggles.GlideToggle and Toggles.GlideToggle.Value
+        local undergroundHover = Toggles.HoverUnderground and Toggles.HoverUnderground.Value
+        local undergroundGlide = Toggles.GlideUnderground and Toggles.GlideUnderground.Value
+
+        if (isHovering and undergroundHover) or (isGliding and undergroundGlide) then
+            for _, part in pairs(char:GetDescendants()) do
+                if part:IsA("BasePart") and part.CanCollide then
+                    part.CanCollide = false
+                end
+            end
+        end
+    end
+end)
+
+-- Actual Movement loop (Manipulates HumanoidRootPart directly)
+RunService.Heartbeat:Connect(function(dt)
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    local hum = char and char:FindFirstChild("Humanoid")
+
+    if hrp and hum then
+        if Toggles.HoverToggle and Toggles.HoverToggle.Value then
+            -- Kill Y-velocity so gravity doesn't pull you down
+            hrp.Velocity = Vector3.new(0, 0, 0) 
+            
+            -- Move based on walk direction (WASD/Joystick)
+            if hum.MoveDirection.Magnitude > 0 then
+                hrp.CFrame = hrp.CFrame + (hum.MoveDirection * Options.HoverSpeed.Value * dt)
+            end
+            
+        elseif Toggles.GlideToggle and Toggles.GlideToggle.Value then
+            -- Slight negative Y-velocity to slowly fall
+            hrp.Velocity = Vector3.new(0, -5, 0)
+            
+            -- Move forward
+            if hum.MoveDirection.Magnitude > 0 then
+                hrp.CFrame = hrp.CFrame + (hum.MoveDirection * Options.GlideSpeed.Value * dt)
+            end
+        end
+    end
+end)
 
 -- ==========================================
 --               UI SETTINGS TAB
 -- ==========================================
-
 Library:SetWatermark("ShinyLeak - Nights of Eternity")
-Library:Notify("Script loaded successfully!", 3)
+Library:Notify("Movement features added!", 3)
 
--- Set up the Theme Manager
 ThemeManager:SetLibrary(Library)
 ThemeManager:SetFolder("ShinyLeak")
-ThemeManager:BuildGroupBox(Tabs.UISettings:AddGroupbox({
-    Side = "Left",
-    Name = "Theme",
-}))
+ThemeManager:BuildGroupBox(Tabs.UISettings:AddGroupbox({ Side = "Left", Name = "Theme" }))
 
--- Set up the Save Manager (Configs)
 SaveManager:SetLibrary(Library)
 SaveManager:IgnoreThemeSettings()
 SaveManager:SetIgnoreIndexes({'UISettings'})
